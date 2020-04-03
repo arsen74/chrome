@@ -21,14 +21,19 @@
 module.exports = async function screenshot ({ page, context } = {}) {
   const {
     authenticate = null,
+    addScriptTag = [],
+    addStyleTag = [],
     url = null,
     cookies = [],
     gotoOptions,
     html = '',
+    userAgent = '',
+    manipulate = null,
     options = {},
     rejectRequestPattern = [],
     requestInterceptors = [],
     setExtraHTTPHeaders = null,
+    setJavaScriptEnabled = null,
     viewport,
     waitFor,
   } = context;
@@ -39,6 +44,10 @@ module.exports = async function screenshot ({ page, context } = {}) {
 
   if (setExtraHTTPHeaders) {
     await page.setExtraHTTPHeaders(setExtraHTTPHeaders);
+  }
+
+  if (setJavaScriptEnabled !== null) {
+    await page.setJavaScriptEnabled(setJavaScriptEnabled);
   }
 
   if (rejectRequestPattern.length || requestInterceptors.length) {
@@ -64,6 +73,10 @@ module.exports = async function screenshot ({ page, context } = {}) {
     await page.setViewport(viewport);
   }
 
+  if (userAgent) {
+    await page.setUserAgent(userAgent);
+  }
+
   if (url !== null) {
     await page.goto(url, gotoOptions);
   } else {
@@ -80,6 +93,18 @@ module.exports = async function screenshot ({ page, context } = {}) {
     await page.goto('http://localhost', gotoOptions);
   }
 
+  if (addStyleTag.length) {
+    for (tag in addStyleTag) {
+      await page.addStyleTag(addStyleTag[tag]);
+    }
+  }
+
+  if (addScriptTag.length) {
+    for (script in addScriptTag) {
+      await page.addScriptTag(addScriptTag[script]);
+    }
+  }
+
   if (waitFor) {
     if (typeof waitFor === 'string') {
       const isSelector = await page.evaluate((s) => {
@@ -88,7 +113,7 @@ module.exports = async function screenshot ({ page, context } = {}) {
         return true;
       }, waitFor);
 
-      await (isSelector ? page.waitFor(waitFor) : page.waitForFunction(waitFor));
+      await (isSelector ? page.waitFor(waitFor) : page.evaluate(`(${waitFor})()`));
     } else {
       await page.waitFor(waitFor);
     }
@@ -96,8 +121,34 @@ module.exports = async function screenshot ({ page, context } = {}) {
 
   const data = await page.screenshot(options);
 
+  if (manipulate) {
+    const sharp = require('sharp');
+    const chain = sharp(data);
+
+    if (manipulate.resize) {
+      chain.resize(manipulate.resize);
+    }
+
+    if (manipulate.flip) {
+      chain.flip();
+    }
+
+    if (manipulate.flop) {
+      chain.flop();
+    }
+
+    if (manipulate.rotate) {
+      chain.rotate(manipulate.rotate);
+    }
+
+    return {
+      data: await chain.toBuffer(),
+      type: options.type ? options.type : 'png',
+    };
+  }
+
   return {
     data,
-    type: options.type ? options.type : 'png'
+    type: options.type ? options.type : 'png',
   };
 };

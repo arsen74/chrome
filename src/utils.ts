@@ -1,7 +1,7 @@
 import * as cookie from 'cookie';
 import * as express from 'express';
 import * as fs from 'fs';
-import { IncomingMessage, ServerResponse } from 'http';
+import { IncomingMessage } from 'http';
 import * as Joi from 'joi';
 import * as _ from 'lodash';
 import * as net from 'net';
@@ -13,10 +13,20 @@ import { PassThrough } from 'stream';
 import * as url from 'url';
 import * as util from 'util';
 
-import { IWebdriverStartHTTP } from './browserless';
-import { CHROME_BINARY_LOCATION, WORKSPACE_DIR } from './config';
+import { WORKSPACE_DIR } from './config';
+
+import {
+  IWebdriverStartHTTP,
+  IWebdriverStartNormalized,
+  IWorkspaceItem,
+  IUpgradeHandler,
+  IRequestHandler,
+  IHTTPRequest,
+  ILaunchOptions,
+} from './types';
 
 const dbg = require('debug');
+const { CHROME_BINARY_LOCATION } = require('../env');
 
 const mkdtemp = util.promisify(fs.mkdtemp);
 
@@ -31,34 +41,22 @@ export const mkdir = util.promisify(fs.mkdir);
 export const rimraf = util.promisify(rmrf);
 export const getDebug = (level: string) => dbg(`browserless:${level}`);
 
+const webDriverPath = '/webdriver/session';
+const webdriverSessionCloseReg = /^\/webdriver\/session\/((\w+$)|(\w+\/window))/;
+
 const debug = getDebug('system');
 
-type IUpgradeHandler = (req: IncomingMessage, socket: net.Socket, head: Buffer) => Promise<any>;
-type IRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<any>;
-
-const legacyChromeOptions = 'chromeOptions';
-const w3cChromeOptions = 'goog:chromeOptions';
-
-export interface IHTTPRequest extends IncomingMessage {
-  parsed: url.UrlWithParsedQuery;
-}
-
-export interface IHTTPRequestBody extends IncomingMessage {
-  body: any;
-}
-
-export interface IWorkspaceItem {
-  created: Date;
-  isDirectory: boolean;
-  name: string;
-  path: string;
-  size: number;
-  workspaceId: string | null;
-}
+const legacyChromeOptionsKey = 'chromeOptions';
+const w3cChromeOptionsKey = 'goog:chromeOptions';
 
 const readFilesRecursive = async (dir: string, results: IWorkspaceItem[] = []) => {
   const [, parentDir] = dir.split(WORKSPACE_DIR);
-  const deburredParentDir = parentDir.replace(/^\//, '');
+  const workspaceDir = _.chain(parentDir)
+    .split(path.sep)
+    .compact()
+    .head()
+    .value();
+
   const files = await readdir(dir);
 
   await Promise.all(files.map(async (file) => {
@@ -74,7 +72,7 @@ const readFilesRecursive = async (dir: string, results: IWorkspaceItem[] = []) =
       name: file,
       path: path.join('/workspace', parentDir, file),
       size: stats.size,
-      workspaceId: deburredParentDir.length ? deburredParentDir : null,
+      workspaceId: workspaceDir || null,
     });
 
     return results;
@@ -95,7 +93,7 @@ export const buildWorkspaceDir = async (dir: string): Promise<IWorkspaceItem[] |
     return null;
   }
 
-  return  await readFilesRecursive(dir);
+  return await readFilesRecursive(dir);
 };
 
 export const getBasicAuthToken = (req: IncomingMessage): string => {
@@ -140,6 +138,35 @@ export const bodyValidation = (schema: Joi.Schema) => {
     }
 
     const result = Joi.validate(req.body, schema);
+
+    if (result.error) {
+      debug(`Malformed incoming request: ${result.error}`);
+      return res.status(400).send(result.error.details);
+    }
+
+    // Allow .defaults to work otherwise
+    // Joi schemas default's won't apply
+    req.body = result.value;
+
+    return next();
+  };
+};
+
+export const queryValidation = (schema: Joi.Schema) => {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    let inflated: string | null = null;
+
+    try {
+      inflated = JSON.parse(req.query.body);
+    } catch {
+      inflated = null;
+    }
+
+    if (!inflated) {
+      return res.status(400).send(`The query-parameter "body" is required, and must be a URL-encoded JSON object.`);
+    }
+
+    const result = Joi.validate(inflated, schema);
 
     if (result.error) {
       debug(`Malformed incoming request: ${result.error}`);
@@ -208,61 +235,112 @@ const safeParse = (maybeJson: any) => {
   }
 };
 
-export const normalizeWebdriverStart = async (req: IncomingMessage): Promise<any> => {
+export const normalizeWebdriverStart = async (req: IncomingMessage): Promise<IWebdriverStartNormalized> => {
   const body = await readRequestBody(req);
   const parsed = safeParse(body);
+  let isUsingTempDataDir: boolean;
 
   // Make old selenium requests bw compatible
-  if (_.has(parsed, ['desiredCapabilities', legacyChromeOptions])) {
-    parsed.desiredCapabilities[w3cChromeOptions] = _.cloneDeep(parsed.desiredCapabilities[legacyChromeOptions]);
-    delete parsed.desiredCapabilities[legacyChromeOptions];
+  if (_.has(parsed, ['desiredCapabilities', legacyChromeOptionsKey])) {
+    parsed.desiredCapabilities[w3cChromeOptionsKey] = _.cloneDeep(parsed.desiredCapabilities[legacyChromeOptionsKey]);
+    delete parsed.desiredCapabilities[legacyChromeOptionsKey];
   }
 
-  if (_.has(parsed, ['capabilities', 'alwaysMatch'])) {
-    parsed.capabilities.alwaysMatch[w3cChromeOptions] = _.cloneDeep(
-      parsed.capabilities.alwaysMatch[legacyChromeOptions] ||
-      parsed.desiredCapabilities[w3cChromeOptions],
+  if (_.has(parsed, ['capabilities', 'alwaysMatch', legacyChromeOptionsKey])) {
+    parsed.capabilities.alwaysMatch[w3cChromeOptionsKey] = _.cloneDeep(
+      parsed.capabilities.alwaysMatch[legacyChromeOptionsKey] ||
+      parsed.desiredCapabilities[w3cChromeOptionsKey],
     );
-    delete parsed.capabilities.alwaysMatch[legacyChromeOptions];
+    delete parsed.capabilities.alwaysMatch[legacyChromeOptionsKey];
   }
 
   if (
     _.has(parsed, ['capabilities', 'firstMatch']) &&
-    _.some(parsed.capabilities.firstMatch, (opt) => opt[legacyChromeOptions])
+    _.some(parsed.capabilities.firstMatch, (opt) => opt[legacyChromeOptionsKey])
   ) {
     _.each(parsed.capabilities.firstMatch, (opt) => {
-      if (opt[legacyChromeOptions]) {
-        opt[w3cChromeOptions] = _.cloneDeep(opt[legacyChromeOptions]);
-        delete opt[legacyChromeOptions];
+      if (opt[legacyChromeOptionsKey]) {
+        opt[w3cChromeOptionsKey] = _.cloneDeep(opt[legacyChromeOptionsKey]);
+        delete opt[legacyChromeOptionsKey];
       }
     });
   }
 
-  // Set binary path
-  if (_.has(parsed, ['desiredCapabilities', w3cChromeOptions])) {
-    parsed.desiredCapabilities[w3cChromeOptions].binary = CHROME_BINARY_LOCATION;
+  const launchArgs = _.uniq([
+    ..._.get(parsed, ['desiredCapabilities', w3cChromeOptionsKey, 'args'], []) as string[],
+    ..._.get(parsed, ['capabilities', 'alwaysMatch', w3cChromeOptionsKey, 'args'], []) as string[],
+    ..._.get(parsed, ['capabilities', 'firstMatch', '0', w3cChromeOptionsKey, 'args'], []) as string[],
+  ]);
+
+  // Set a temp data dir
+  isUsingTempDataDir = !launchArgs.some((arg: string) => arg.startsWith('--user-data-dir'));
+
+  const browserlessDataDir = isUsingTempDataDir ? await getUserDataDir() : null;
+
+  // Set binary path and user-data-dir
+  if (_.has(parsed, ['desiredCapabilities', w3cChromeOptionsKey])) {
+    if (isUsingTempDataDir) {
+      parsed.desiredCapabilities[w3cChromeOptionsKey].args = parsed.desiredCapabilities[w3cChromeOptionsKey].args || [];
+      parsed.desiredCapabilities[w3cChromeOptionsKey].args.push(`--user-data-dir=${browserlessDataDir}`);
+    }
+    parsed.desiredCapabilities[w3cChromeOptionsKey].binary = CHROME_BINARY_LOCATION;
   }
 
-  if (_.has(parsed, ['capabilities', 'alwaysMatch', w3cChromeOptions])) {
-    parsed.capabilities.alwaysMatch[w3cChromeOptions].binary = CHROME_BINARY_LOCATION;
+  if (_.has(parsed, ['capabilities', 'alwaysMatch', w3cChromeOptionsKey])) {
+    if (isUsingTempDataDir) {
+      parsed.capabilities.alwaysMatch[w3cChromeOptionsKey].args = parsed.capabilities.alwaysMatch[w3cChromeOptionsKey].args || [];
+      parsed.capabilities.alwaysMatch[w3cChromeOptionsKey].args.push(`--user-data-dir=${browserlessDataDir}`);
+    }
+    parsed.capabilities.alwaysMatch[w3cChromeOptionsKey].binary = CHROME_BINARY_LOCATION;
   }
 
   if (
     _.has(parsed, ['capabilities', 'firstMatch']) &&
-    _.some(parsed.capabilities.firstMatch, (opt) => opt[w3cChromeOptions])
+    _.some(parsed.capabilities.firstMatch, (opt) => opt[w3cChromeOptionsKey])
   ) {
     _.each(parsed.capabilities.firstMatch, (opt) => {
-      if (opt[w3cChromeOptions]) {
-        opt[w3cChromeOptions].binary = CHROME_BINARY_LOCATION;
+      if (opt[w3cChromeOptionsKey]) {
+        if (isUsingTempDataDir) {
+          opt[w3cChromeOptionsKey].args = opt[w3cChromeOptionsKey].args || [];
+          opt[w3cChromeOptionsKey].args.push(`--user-data-dir=${browserlessDataDir}`);
+        }
+        opt[w3cChromeOptionsKey].binary = CHROME_BINARY_LOCATION;
       }
     });
   }
 
   const stringifiedBody = JSON.stringify(parsed, null, '');
+
   req.headers['content-length'] = stringifiedBody.length.toString();
   attachBodyToRequest(req, stringifiedBody);
 
-  return parsed;
+  const blockAds = !!parsed.desiredCapabilities['browserless.blockAds'];
+  const trackingId = parsed.desiredCapabilities['browserless.trackingId'] || null;
+  const pauseOnConnect = !!parsed.desiredCapabilities['browserless.pause'];
+  const windowSizeArg = launchArgs.find((arg) => arg.includes('window-size='));
+  const windowSizeParsed = windowSizeArg && windowSizeArg.split('=')[1].split(',');
+
+  let windowSize;
+
+  if (Array.isArray(windowSizeParsed)) {
+    const [ width, height ] = windowSizeParsed;
+    windowSize = {
+      width: +width,
+      height: +height,
+    };
+  }
+
+  return {
+    body: parsed,
+    params: {
+      blockAds,
+      trackingId,
+      pauseOnConnect,
+      windowSize,
+      isUsingTempDataDir,
+      browserlessDataDir,
+    }
+  };
 };
 
 const attachBodyToRequest = (req: IncomingMessage, body: any) => {
@@ -289,10 +367,10 @@ const readRequestBody = async (req: IncomingMessage): Promise<any> => {
     req
       .on('data', (chunk) => body.push(chunk))
       .on('end', () => {
-        if (!req.complete || hasResolved) {
-          resolveNow(null);
-        }
         const final = Buffer.concat(body).toString();
+        if (hasResolved) {
+          return;
+        }
         resolveNow(final);
       })
       .on('aborted', () => {
@@ -352,4 +430,46 @@ export const getTimeoutParam = (req: IHTTPRequest | IWebdriverStartHTTP): number
   }
 
   return null;
+};
+
+export const isWebdriverStart = (req: IncomingMessage) => {
+  return req.method?.toLowerCase() === 'post' && req.url === webDriverPath
+};
+
+export const isWebdriverClose = (req: IncomingMessage) => {
+  return req.method?.toLowerCase() === 'delete' && webdriverSessionCloseReg.test(req.url || '')
+};
+
+export const isWebdriver = (req: IncomingMessage) => {
+  return req.url?.includes(webDriverPath);
+};
+
+export const canPreboot = (incoming: ILaunchOptions, defaults: ILaunchOptions) => {
+  if (!_.isUndefined(incoming.headless) && incoming.headless !== defaults.headless) {
+    return false;
+  }
+
+  if (!_.isUndefined(incoming.args) && _.difference(incoming.args, defaults.args as string[]).length) {
+    return false;
+  }
+
+  if (!_.isUndefined(incoming.ignoreDefaultArgs)) {
+    if (typeof incoming.ignoreDefaultArgs !== typeof defaults.ignoreDefaultArgs) {
+      return false;
+    }
+
+    if (Array.isArray(incoming.ignoreDefaultArgs) && Array.isArray(defaults.ignoreDefaultArgs)) {
+      return !_.difference(incoming.ignoreDefaultArgs, defaults.ignoreDefaultArgs).length;
+    }
+
+    if (incoming.ignoreDefaultArgs !== defaults.ignoreDefaultArgs) {
+      return false;
+    }
+  }
+
+  if (!_.isUndefined(incoming.userDataDir) && incoming.userDataDir !== defaults.userDataDir) {
+    return false;
+  }
+
+  return true;
 };

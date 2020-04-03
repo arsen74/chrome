@@ -10,17 +10,24 @@ import * as client from 'prom-client';
 import request = require('request');
 import * as url from 'url';
 
-import { Feature } from './features';
+import { Features } from './features';
 import * as util from './utils';
 
 import { ResourceMonitor } from './hardware-monitoring';
 import { afterRequest, beforeRequest, externalRoutes } from './hooks';
-import { IBrowserlessOptions } from './models/options.interface';
 import { PuppeteerProvider } from './puppeteer-provider';
-import { IDone, IJob, Queue } from './queue';
+import { Queue } from './queue';
 import { getRoutes } from './routes';
 import { clearTimers } from './scheduler';
 import { WebDriver } from './webdriver-provider';
+
+import {
+  IBrowserlessOptions,
+  IBrowserlessStats,
+  IDone,
+  IJob,
+  IWebdriverStartHTTP,
+} from './types';
 
 const debug = util.getDebug('server');
 
@@ -28,12 +35,6 @@ const twentyFourHours = 1000 * 60 * 60 * 24;
 const thirtyMinutes = 30 * 60 * 1000;
 const fiveMinutes = 5 * 60 * 1000;
 const maxStats = 12 * 24 * 7; // 7 days @ 5-min intervals
-
-const webDriverPath = '/webdriver/session';
-
-export interface IWebdriverStartHTTP extends util.IHTTPRequest {
-  body: any;
-}
 
 export class BrowserlessServer {
   public currentStat: IBrowserlessStats;
@@ -54,6 +55,7 @@ export class BrowserlessServer {
   private metricsInterval: NodeJS.Timeout;
   private workspaceDir: IBrowserlessOptions['workspaceDir'];
   private singleRun: IBrowserlessOptions['singleRun'];
+  private enableAPIGet: IBrowserlessOptions['enableAPIGet'];
 
   constructor(opts: IBrowserlessOptions) {
     // The backing queue doesn't let you set a max limitation
@@ -73,6 +75,7 @@ export class BrowserlessServer {
     this.resourceMonitor = new ResourceMonitor();
     this.puppeteerProvider = new PuppeteerProvider(opts, this, this.queue);
     this.webdriver = new WebDriver(this.queue);
+    this.enableAPIGet = opts.enableAPIGet;
     this.singleRun = opts.singleRun;
     this.workspaceDir = opts.workspaceDir;
     this.stats = [];
@@ -198,7 +201,7 @@ export class BrowserlessServer {
         this.config.connectionTimeout + 100;
       const app = express();
 
-      if (!this.config.disabledFeatures.includes(Feature.PROMETHEUS)) {
+      if (!this.config.disabledFeatures.includes(Features.PROMETHEUS)) {
         client.register.clear();
         const metricsMiddleware = promBundle({
           includeMethod: true,
@@ -218,13 +221,14 @@ export class BrowserlessServer {
         getPressure: this.getPressure.bind(this),
         puppeteerProvider: this.puppeteerProvider,
         workspaceDir: this.workspaceDir,
+        enableAPIGet: this.enableAPIGet,
       });
 
       if (this.config.enableCors) {
         app.use(cors());
       }
 
-      if (!this.config.disabledFeatures.includes(Feature.DEBUGGER)) {
+      if (!this.config.disabledFeatures.includes(Features.DEBUGGER)) {
         app.use('/', express.static('./debugger'));
       }
 
@@ -240,11 +244,11 @@ export class BrowserlessServer {
           const beforeResults = await beforeRequest({ req: reqParsed, res });
 
           if (!beforeResults) {
-            return res.end();
+            return;
           }
 
           // Handle webdriver requests early, which handles it's own auth
-          if (reqParsed.url && reqParsed.url.includes(webDriverPath)) {
+          if (util.isWebdriver(req)) {
             return this.handleWebDriver(reqParsed, res);
           }
 
@@ -268,10 +272,10 @@ export class BrowserlessServer {
         })
         .on('upgrade', util.asyncWsHandler(async (req: http.IncomingMessage, socket: Socket, head: Buffer) => {
           const reqParsed = util.parseRequest(req);
-          const beforeResults = await beforeRequest({ req: reqParsed, socket });
+          const beforeResults = await beforeRequest({ req: reqParsed, socket, head });
 
           if (!beforeResults) {
-            return socket.end();
+            return;
           }
 
           if (this.config.token && !util.isAuthorized(reqParsed, this.config.token)) {
@@ -307,7 +311,7 @@ export class BrowserlessServer {
         resolve();
       }),
       this.puppeteerProvider.kill(),
-      this.webdriver.close(),
+      this.webdriver.kill(),
     ]);
 
     debug(`Successfully shutdown, exiting`);
@@ -366,27 +370,26 @@ export class BrowserlessServer {
   }
 
   private async handleWebDriver(req: http.IncomingMessage, res: http.ServerResponse) {
-    const sessionPathMatcher = new RegExp('^' + webDriverPath + '/\\w+$');
-
-    const isStarting = req.method && req.method.toLowerCase() === 'post' && req.url === webDriverPath;
-    const isClosing = req.method && req.method.toLowerCase() === 'delete' && sessionPathMatcher.test(req.url || '');
+    const isStarting = util.isWebdriverStart(req);
+    const isClosing = util.isWebdriverClose(req);
 
     if (isStarting) {
       const ret = req as IWebdriverStartHTTP;
-      const postBody = await util.normalizeWebdriverStart(req);
-      if (!postBody) {
+      const { body, params } = await util.normalizeWebdriverStart(req);
+
+      if (!body) {
         res.writeHead && res.writeHead(400, { 'Content-Type': 'text/plain' });
         return res.end('Bad Request');
       }
 
-      if (this.config.token && !util.isWebdriverAuthorized(req, postBody, this.config.token)) {
+      if (this.config.token && !util.isWebdriverAuthorized(req, body, this.config.token)) {
         res.writeHead && res.writeHead(403, { 'Content-Type': 'text/plain' });
         return res.end('Unauthorized');
       }
 
-      ret.body = postBody;
+      ret.body = body;
 
-      return this.webdriver.start(ret, res);
+      return this.webdriver.start(ret, res, params);
     }
 
     if (isClosing) {
@@ -478,7 +481,7 @@ export class BrowserlessServer {
     }
 
     // CPU/Memory being `null` is an indicator of bad health
-    if (!cpu || cpu >= this.config.maxCPU || !memory || memory >= this.config.maxMemory) {
+    if (!cpu || (cpu * 100) >= this.config.maxCPU || !memory || (memory * 100) >= this.config.maxMemory) {
       debug(`Health checks have failed, calling failure webhook: CPU: ${cpu}% Memory: ${memory}%`);
       this.healthFailureHook();
     }

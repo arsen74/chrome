@@ -1,3 +1,98 @@
+# [1.31.0](https://github.com/browserless/chrome/compare/v1.30.0...v1.31.0)
+- Dependency Updates.
+- Allows `trackingId` on uploaded files to save in the appropriate tracking-ID folder.
+- New `userAgent` param for setting user-agent in API requests.
+- Fixes an issue where chrome wasn't being closed in rare cases.
+
+# [1.30.0](https://github.com/browserless/chrome/compare/v1.29.1...v1.30.0)
+- Dependency Updates.
+- Updates to Node 13 for speed and memory improvements.
+- browserless/base@1.4.0
+
+# [1.29.1](https://github.com/browserless/chrome/compare/v1.29.0...v1.29.1)
+- Dependency Updates.
+- Fixes how deploy script determines errors when running child commands.
+- Fixes issues when many selenium sessions can potentially fill up disk space.
+
+# [1.29.0](https://github.com/browserless/chrome/compare/v1.28.0...v1.29.0)
+- Dependency updates.
+- Uses `pipe`'s for most API calls and other internal endpoints for faster/better throughput. Works only for `headless` API/puppeteer calls.
+- Allows custom lighthouse configs via POST `config` property.
+- Patches vm2.
+- Before hooks no longer end requests forcefully -- external hooks must manually end the request/sockets themselves.
+- Properly passes socket errors to the error handler/webhook
+
+# [1.28.0](https://github.com/browserless/chrome/compare/v1.27.0...v1.28.0)
+- Dependency updates.
+- Sets a system-default font of Ubuntu for most sites that use `system-ui` in their font declarations.
+- Fixes health-check failure webhooks.
+- New `PROXY_HOST`, `PROXY_PORT` and `PROXY_SSL` for external load-balancers. [See docsite for more info](https://docs.browserless.io/docs/docker.html#using-a-proxy).
+- Moves over to GH actions over Travis for CI.
+
+# [1.27.0](https://github.com/browserless/chrome/compare/v1.26.1...v1.27.0)
+- Dependency updates.
+- New `manipulate` params for screenshots, allowing for resizing, flipping and more.
+- Better tracking of chrome-process for cleanup of zombied sessions.
+
+# [1.26.1](https://github.com/browserless/chrome/compare/v1.26.0...v1.26.1)
+- Dependency updates.
+- Added `git` as a dependency in dockerfile for git-based npm dependencies to work.
+- Fixed an issue in `start.sh` so that errors bubble up properly and close the process.
+- Bumps `browserless/base` to `1.2.0`.
+
+# [1.26.0](https://github.com/browserless/chrome/compare/v1.25.0...v1.26.0)
+- Dependency updates.
+- Dropping pre-push hooks for speed.
+- Consolidate all interfaces/types to a types.d.ts file.
+- Fixes an issue where numerous chrome instances launch when prebooting.
+- Fixes an issue where incoming requests don't use the pre-booted chrome instance.
+- Uses `page.setViewport` when `--window-size` is set in params to help with screenshots not appearing properly (chromedriver only).
+-
+
+# [1.25.0](https://github.com/browserless/chrome/compare/v1.24.0...v1.25.0)
+- Dependency updates.
+- Stricter build-time arguments for chromium and chromedriver assets.
+- Better XVFB functionality.
+- New parameters for most API's, `addScriptTag` and `addStyleTag`, accepting an array of scripts/styles respectively.
+- Drop support for `puppeteer@1.17.0`.
+- Proper support for parsing `ignoreDefaultArgs` query-parameters.
+
+# [1.24.0](https://github.com/browserless/chrome/compare/v1.23.1...v1.24.0)
+- Dependency updates.
+- Bugfix on our debugger's play button being off-center.
+- Fixes driver.close() calls not cleaning the browser.
+- New `/GET` option for most our APIs. Stringify your JSON and add a ?body=YOUR-JSON with a /GET call to most of our functions! Requires `ENABLE_API_GET=true` in you docker env variables.
+- WebSocket (Socket) exception handling and logging.
+- More integration and unit tests added.
+
+# [1.23.1](https://github.com/browserless/chrome/compare/v1.23.0...v1.23.1)
+- Fixes an issue in chromedriver where commands would hang.
+- Fixes an issue in chromedriver sessions not being removed properly.
+- Fixes and pins the base image so that headful sessions work again.
+
+# [1.23.0](https://github.com/browserless/chrome/compare/v1.22.0...v1.23.0)
+- Dependency updates.
+- Use `apt-get` to install `dumb-init`.
+- Add a LANG arg in docker.
+- New `setJavaScriptEnabled` property for REST APIs.
+- Fixes an issue with `waitFor` functions in REST API calls.
+- Fixes issues when PREBOOT_CHROME and KEEPALIVE are true.
+- Updates protocol and host information in ad-blocking.
+
+# [1.22.0](https://github.com/browserless/chrome/compare/v1.21.0...v1.22.0)
+- Dependency updates.
+- Removal of unnecessary '--disable-dev-shm-usage'
+- Squelching of chromedriver's verbose args unless `DEBUG=*` is set.
+- New `/kill/${id}` route for remotely killing a certain browser.
+- Allowing of sub-child routes in workspaces.
+
+# [1.21.0](https://github.com/browserless/chrome/compare/v1.20.0...v1.21.0)
+- Dependency updates.
+- New `viewport` property option for PDF endpoint.
+- The `/stats` endpoint now runs in a separate process meaning it can be parallelized.
+- Fixed a bug where hardware monitoring can cause the container to restart/crash.
+- Fixes an issue with the file-chooser API not working in puppeteer.
+
 # [1.20.0](https://github.com/browserless/chrome/compare/v1.19.0...v1.20.0)
 - Dependency updates.
 - New `/scrape` API!

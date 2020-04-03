@@ -2,25 +2,22 @@ import { IncomingMessage, OutgoingMessage, ServerResponse } from 'http';
 import * as httpProxy from 'http-proxy';
 import * as _ from 'lodash';
 
-import { IWebdriverStartHTTP } from './browserless';
 import * as chromeHelper from './chrome-helper';
-import { IDone, IJob, Queue } from './queue';
+import { Queue } from './queue';
 import { getDebug } from './utils';
+
+import {
+  IChromeDriver,
+  IWebdriverStartHTTP,
+  IWebdriverStartNormalized,
+  IWebDriverSession,
+  IWebDriverSessions,
+  IDone,
+  IJob,
+} from './types';
 
 const debug = getDebug('webdriver');
 const kill = require('tree-kill');
-
-interface IWebDriverSession {
-  chromeProcess: any;
-  done: IDone;
-  sessionId: string;
-  proxy: any;
-  res: ServerResponse;
-}
-
-interface IWebDriverSessions {
-  [key: string]: IWebDriverSession;
-}
 
 export class WebDriver {
   private queue: Queue;
@@ -34,7 +31,7 @@ export class WebDriver {
   // Since Webdriver commands happen over HTTP, and aren't
   // maintained, we treat with the initial session request
   // with some special circumstances and use it inside our queue
-  public start(req: IWebdriverStartHTTP, res: ServerResponse) {
+  public start(req: IWebdriverStartHTTP, res: ServerResponse, params: IWebdriverStartNormalized['params']) {
     debug(`Inbound webdriver request`);
 
     if (!this.queue.hasCapacity) {
@@ -50,7 +47,7 @@ export class WebDriver {
     const job: IJob = Object.assign(
       (done: IDone) => {
         req.removeListener('close', earlyClose);
-        this.launchChrome(req.body)
+        this.launchChrome(params)
           .then((chromeDriver) => {
             const proxy: any = httpProxy.createProxyServer({
               changeOrigin: true,
@@ -77,10 +74,13 @@ export class WebDriver {
 
                 debug('Session started, got body: ', responseBody);
 
+                chromeDriver.chromeProcess.once('exit', done);
+
                 job.id = id;
 
                 this.webDriverSessions[id] = {
-                  chromeProcess: chromeDriver.chromeProcess,
+                  browser: chromeDriver.browser,
+                  chromeDriver: chromeDriver.chromeProcess,
                   done,
                   proxy,
                   res,
@@ -98,6 +98,8 @@ export class WebDriver {
                 job.close = () => {
                   debug(`Killing chromedriver and proxy ${chromeDriver.chromeProcess.pid}`);
                   kill(chromeDriver.chromeProcess.pid, 'SIGKILL');
+                  chromeDriver.chromeProcess.off('close', done);
+                  chromeDriver.browser && chromeHelper.closeBrowser(chromeDriver.browser);
                   proxy.close();
                   delete this.webDriverSessions[id];
                 };
@@ -180,12 +182,16 @@ export class WebDriver {
     });
   }
 
-  public close() {
+  // Used during shutdown
+  public kill() {
     for (const sessionId in this.webDriverSessions) {
       if (sessionId) {
         const session = this.webDriverSessions[sessionId];
-        debug(`Killing chromedriver and proxy ${session.chromeProcess.pid}`);
-        kill(session.chromeProcess.pid, 'SIGKILL');
+        kill(session.chromeDriver.pid, 'SIGKILL');
+        if (session.browser) {
+          debug(`Killing chromedriver and proxy ${session.browser._browserProcess.pid}`);
+          chromeHelper.closeBrowser(session.browser);
+        }
         session.proxy.close();
         delete this.webDriverSessions[sessionId];
       }
@@ -210,22 +216,14 @@ export class WebDriver {
     return session;
   }
 
-  private launchChrome(body: any, retries = 1): Promise<chromeHelper.IChromeDriver> {
-    const blockAds = body.desiredCapabilities['browserless.blockAds'];
-    const trackingId = body.desiredCapabilities['browserless.trackingId'];
-    const pauseOnConnect = body.desiredCapabilities['browserless.pause'];
-
-    return chromeHelper.launchChromeDriver({
-      blockAds,
-      pauseOnConnect,
-      trackingId,
-    })
+  private launchChrome(params: IWebdriverStartNormalized['params'], retries = 1): Promise<IChromeDriver> {
+    return chromeHelper.launchChromeDriver(params)
       .catch((error) => {
         debug(`Issue launching ChromeDriver, error:`, error);
 
         if (retries) {
           debug(`Retrying launch of ChromeDriver`);
-          return this.launchChrome(body, retries - 1);
+          return this.launchChrome(params, retries - 1);
         }
 
         debug(`Retries exhausted, throwing`);
