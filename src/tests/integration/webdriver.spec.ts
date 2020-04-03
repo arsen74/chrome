@@ -1,7 +1,7 @@
 import { BrowserlessServer } from '../../browserless';
 import { sleep } from '../../utils';
 
-import { IBrowserlessOptions } from '../../models/options.interface';
+import { IBrowserlessOptions } from '../../types';
 import {
   defaultParams,
   getChromeProcesses,
@@ -48,6 +48,69 @@ describe('Browserless Chrome Webdriver', () => {
     await sleep(50);
 
     expect(browserless.currentStat.successful).toEqual(2);
+    expect(browserless.currentStat.rejected).toEqual(0);
+    expect(browserless.currentStat.queued).toEqual(0);
+  });
+
+  it('handles driver close calls', async () => {
+    const params = defaultParams();
+    const chromeCapabilities = webdriver.Capabilities.chrome();
+    const browserless = start(params);
+
+    await browserless.startServer();
+    chromeCapabilities.set('goog:chromeOptions', webdriverOpts);
+
+    async function run() {
+      const driver = new webdriver.Builder()
+        .forBrowser('chrome')
+        .withCapabilities(chromeCapabilities)
+        .usingServer(`http://127.0.0.1:${params.port}/webdriver`)
+        .build();
+
+      await driver.get('https://example.com');
+      await driver.close();
+    }
+
+    await run();
+    await sleep(50);
+
+    expect(browserless.currentStat.successful).toEqual(1);
+    expect(browserless.currentStat.rejected).toEqual(0);
+    expect(browserless.currentStat.queued).toEqual(0);
+  });
+
+  it('runs lengthy sessions', async () => {
+    const params = defaultParams();
+    const chromeCapabilities = webdriver.Capabilities.chrome();
+    const browserless = start({
+      ...params,
+      maxConcurrentSessions: 1,
+    });
+
+    await browserless.startServer();
+    chromeCapabilities.set('goog:chromeOptions', webdriverOpts);
+
+    async function run() {
+      const driver = new webdriver.Builder()
+        .forBrowser('chrome')
+        .withCapabilities(chromeCapabilities)
+        .usingServer(`http://127.0.0.1:${params.port}/webdriver`)
+        .build();
+
+      await driver.get('https://example.com');
+      await driver.manage().getCookies();
+      await driver.manage().getCookies();
+      await driver.manage().getCookies();
+      await driver.manage().getCookies();
+      await driver.manage().getCookies();
+      await driver.manage().getCookies();
+      await driver.quit();
+    }
+
+    await Promise.all([ run() ]);
+    await sleep(50);
+
+    expect(browserless.currentStat.successful).toEqual(1);
     expect(browserless.currentStat.rejected).toEqual(0);
     expect(browserless.currentStat.queued).toEqual(0);
   });

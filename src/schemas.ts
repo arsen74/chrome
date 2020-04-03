@@ -1,6 +1,7 @@
 import * as Joi from 'joi';
 
 const waitFor = [Joi.string(), Joi.number()];
+const userAgent = Joi.string();
 
 const gotoOptions = Joi.object().keys({
   timeout: Joi.number(),
@@ -15,7 +16,22 @@ const authenticate = Joi.object().keys({
 
 const setExtraHTTPHeaders = Joi.object().unknown();
 
+const setJavaScriptEnabled = Joi.boolean();
+
 const rejectRequestPattern = Joi.array().items(Joi.string()).default([]);
+
+const addScriptTag = Joi.array().items(Joi.object().keys({
+  url: Joi.string(),
+  path: Joi.string(),
+  content: Joi.string(),
+  type: Joi.string(),
+})).default([]);
+
+const addStyleTag = Joi.array().items(Joi.object().keys({
+  url: Joi.string(),
+  path: Joi.string(),
+  content: Joi.string(),
+})).default([]);
 
 const requestInterceptors = Joi.array().items(Joi.object().keys({
   pattern: Joi.string().required(),
@@ -53,9 +69,24 @@ const viewport = Joi.object().keys({
 
 export const screenshot = Joi.object().keys({
   authenticate,
+  addScriptTag,
+  addStyleTag,
   cookies,
   gotoOptions,
   html: Joi.string(),
+  manipulate: Joi.object().keys({
+    resize: Joi.object().keys({
+      width: Joi.number().integer().positive(),
+      height: Joi.number().integer().positive(),
+      fit: Joi.string()
+        .valid('cover', 'contain', 'fill', 'inside', 'outside'),
+      position: Joi.string()
+        .valid('top', 'right top', 'right', 'right bottom', 'bottom', 'left bottom', 'left', 'left top')
+    }),
+    flip: Joi.boolean(),
+    flop: Joi.boolean(),
+    rotate: Joi.number(),
+  }),
   options: Joi.object().keys({
     clip: Joi.object().keys({
       height: Joi.number().min(0),
@@ -71,24 +102,32 @@ export const screenshot = Joi.object().keys({
   rejectRequestPattern,
   requestInterceptors,
   setExtraHTTPHeaders,
+  setJavaScriptEnabled,
   url: Joi.string(),
+  userAgent,
   viewport,
   waitFor,
 }).xor('url', 'html');
 
 export const content = Joi.object().keys({
   authenticate,
+  addScriptTag,
+  addStyleTag,
   cookies,
   gotoOptions,
   rejectRequestPattern,
   requestInterceptors,
   setExtraHTTPHeaders,
+  setJavaScriptEnabled,
   url: Joi.string().required(),
+  userAgent,
   waitFor,
 });
 
 export const pdf = Joi.object().keys({
   authenticate,
+  addScriptTag,
+  addStyleTag,
   cookies,
   emulateMedia: Joi.string().valid('screen', 'print'),
   gotoOptions,
@@ -122,13 +161,17 @@ export const pdf = Joi.object().keys({
     'Can prevent page crashes but is slower, consumes more memory, and returns a larger PDF.',
   ),
   setExtraHTTPHeaders,
+  setJavaScriptEnabled,
   url: Joi.string(),
+  userAgent,
   viewport,
   waitFor,
 }).xor('url', 'html');
 
 export const scrape = Joi.object().keys({
   authenticate,
+  addScriptTag,
+  addStyleTag,
   cookies,
   debug: Joi.object().keys({
     console: Joi.boolean().default(false),
@@ -146,6 +189,7 @@ export const scrape = Joi.object().keys({
   requestInterceptors,
   setExtraHTTPHeaders,
   url: Joi.string().required(),
+  userAgent,
   waitFor,
 });
 
@@ -156,6 +200,7 @@ export const fn = Joi.object().keys({
 });
 
 export const stats = Joi.object().keys({
-  budgets:  Joi.array().items(Joi.object()).optional(),
+  budgets: Joi.array().items(Joi.object()).optional(),
+  config: Joi.object(),
   url: Joi.string().required(),
 });
